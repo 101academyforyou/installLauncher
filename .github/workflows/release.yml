@@ -1,8 +1,8 @@
 name: release
 
-# 在 Mac 上編譯電腦小幫手，做成 WatchLaterHub-Launcher.pkg 並發佈到 GitHub Release。
-# WatchLaterHub 新分頁的「下載小幫手」按鈕固定下載最新版：
-#   https://github.com/101academyforyou/installLauncher/releases/latest/download/WatchLaterHub-Launcher.pkg
+# 編譯電腦小幫手（macOS 通用版、Linux x86_64），發佈到 GitHub Release v<版本>。
+# install-launcher.sh 會下載最新版：
+#   https://github.com/101academyforyou/installLauncher/releases/latest/download/watchlaterhub-launcher-macos
 on:
   push:
     branches: [main]
@@ -14,60 +14,77 @@ permissions:
 jobs:
   mac:
     runs-on: macos-14
-    env:
-      # step 的 if 不能直接讀 secrets，先轉成是否有設定
-      HAS_CERT: ${{ secrets.MAC_INSTALLER_CERT_P12 != '' }}
-      HAS_NOTARY: ${{ secrets.APPLE_ID != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
-      - name: Test helper
-        run: cargo test --release --manifest-path launcher/Cargo.toml
-      # 有設定 Apple 憑證（secrets）才簽署與公證；沒有就產生未簽署的安裝檔
-      - name: Import signing certificate
-        if: env.HAS_CERT == 'true'
-        env:
-          MAC_CERT_P12: ${{ secrets.MAC_INSTALLER_CERT_P12 }}
-          MAC_CERT_PASSWORD: ${{ secrets.MAC_INSTALLER_CERT_PASSWORD }}
+      - run: cargo test --release --manifest-path launcher/Cargo.toml
+      - name: Build universal binary
         run: |
-          echo "$MAC_CERT_P12" | base64 --decode > cert.p12
-          security create-keychain -p ci build.keychain
-          security default-keychain -s build.keychain
-          security unlock-keychain -p ci build.keychain
-          security import cert.p12 -k build.keychain -P "$MAC_CERT_PASSWORD" -T /usr/bin/productsign
-          security set-key-partition-list -S apple-tool:,apple: -s -k ci build.keychain
-          rm cert.p12
-      - name: Store notary credentials
-        if: env.HAS_NOTARY == 'true'
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-        run: xcrun notarytool store-credentials watchlaterhub --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD"
-      - name: Build .pkg
-        env:
-          SIGN_ID: ${{ secrets.MAC_INSTALLER_SIGN_ID }}
-          NOTARY_PROFILE: ${{ env.HAS_NOTARY == 'true' && 'watchlaterhub' || '' }}
-        run: ./build-pkg.sh
+          for t in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --release --manifest-path launcher/Cargo.toml --target "$t"
+          done
+          mkdir -p dist
+          lipo -create -output dist/watchlaterhub-launcher-macos \
+            launcher/target/aarch64-apple-darwin/release/watchlaterhub-launcher \
+            launcher/target/x86_64-apple-darwin/release/watchlaterhub-launcher
+          codesign --force --sign - dist/watchlaterhub-launcher-macos
+          (cd dist && shasum -a 256 watchlaterhub-launcher-macos > watchlaterhub-launcher-macos.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac
+          path: dist/
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo test --release --manifest-path launcher/Cargo.toml
+      - name: Build static binary
+        run: |
+          cargo build --release --manifest-path launcher/Cargo.toml --target x86_64-unknown-linux-musl
+          mkdir -p dist
+          cp launcher/target/x86_64-unknown-linux-musl/release/watchlaterhub-launcher dist/watchlaterhub-launcher-linux-x86_64
+          (cd dist && sha256sum watchlaterhub-launcher-linux-x86_64 > watchlaterhub-launcher-linux-x86_64.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/
+
+  release:
+    needs: [mac, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
       - name: Read version
         id: ver
         run: echo "v=$(sed -n 's/^version = "\(.*\)"/\1/p' launcher/Cargo.toml | head -1)" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: WatchLaterHub-Launcher
-          path: dist/WatchLaterHub-Launcher.pkg
-      # 每個版本一個 Release（版本號在 launcher/Cargo.toml）；同版本再發佈會覆蓋安裝檔
-      - name: Publish release
-        uses: softprops/action-gh-release@v2
+      # 每個版本一個 Release（版本號在 launcher/Cargo.toml）；同版本再發佈會覆蓋檔案
+      - uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.ver.outputs.v }}
           name: 電腦小幫手 v${{ steps.ver.outputs.v }}
           body: |
-            WatchLaterHub「開啟」功能需要的電腦小幫手（Mac，Apple 晶片與 Intel 通用）。
-            下載 WatchLaterHub-Launcher.pkg 雙擊安裝，裝好後回到新分頁按「重新偵測」。
-            移除：sudo "/Library/Application Support/WatchLaterHub/uninstall.sh"
-          files: dist/WatchLaterHub-Launcher.pkg
+            WatchLaterHub「開啟」功能需要的電腦小幫手。安裝：打開終端機，貼上
+
+            ```
+            curl -fsSL https://raw.githubusercontent.com/101academyforyou/installLauncher/main/install-launcher.sh | bash
+            ```
+
+            移除：同一行最後加上 `-s -- --uninstall`
+          files: |
+            dist/watchlaterhub-launcher-macos
+            dist/watchlaterhub-launcher-macos.sha256
+            dist/watchlaterhub-launcher-linux-x86_64
+            dist/watchlaterhub-launcher-linux-x86_64.sha256
           overwrite_files: true
           make_latest: true
