@@ -22,6 +22,21 @@ curl -fsSL https://raw.githubusercontent.com/101academyforyou/installLauncher/ma
 
 用終端機下載與安裝，不會出現 macOS「無法驗證開發者」的警告。
 
+## 裝了還是不能用？
+
+在終端機執行檢查，會逐項列出哪一步有問題：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/101academyforyou/installLauncher/main/install-launcher.sh | bash -s -- --check
+```
+
+常見原因：
+
+- **瀏覽器沒有完全重開**：Mac 要按 ⌘Q 結束 Chrome（只關視窗不算）再打開，然後在「開啟」按「重新偵測」
+- **擴充功能 ID 不同**：到 `chrome://extensions` 看 WatchLaterHub 的 ID，應該是 `lnokcijoconplpecgocjgkhhagkdmcce`。
+  不同的話用你的 ID 重裝：`curl -fsSL …/install-launcher.sh | WLH_EXT_ID=你的ID bash`
+- **擴充功能是舊版**：到 `chrome://extensions` 按 WatchLaterHub 的重新載入
+
 ## 移除
 
 ```bash
