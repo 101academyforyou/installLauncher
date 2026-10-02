@@ -1,0 +1,73 @@
+name: release
+
+# 在 Mac 上編譯電腦小幫手，做成 WatchLaterHub-Launcher.pkg 並發佈到 GitHub Release。
+# WatchLaterHub 新分頁的「下載小幫手」按鈕固定下載最新版：
+#   https://github.com/101academyforyou/installLauncher/releases/latest/download/WatchLaterHub-Launcher.pkg
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  mac:
+    runs-on: macos-14
+    env:
+      # step 的 if 不能直接讀 secrets，先轉成是否有設定
+      HAS_CERT: ${{ secrets.MAC_INSTALLER_CERT_P12 != '' }}
+      HAS_NOTARY: ${{ secrets.APPLE_ID != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - name: Test helper
+        run: cargo test --release --manifest-path launcher/Cargo.toml
+      # 有設定 Apple 憑證（secrets）才簽署與公證；沒有就產生未簽署的安裝檔
+      - name: Import signing certificate
+        if: env.HAS_CERT == 'true'
+        env:
+          MAC_CERT_P12: ${{ secrets.MAC_INSTALLER_CERT_P12 }}
+          MAC_CERT_PASSWORD: ${{ secrets.MAC_INSTALLER_CERT_PASSWORD }}
+        run: |
+          echo "$MAC_CERT_P12" | base64 --decode > cert.p12
+          security create-keychain -p ci build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p ci build.keychain
+          security import cert.p12 -k build.keychain -P "$MAC_CERT_PASSWORD" -T /usr/bin/productsign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci build.keychain
+          rm cert.p12
+      - name: Store notary credentials
+        if: env.HAS_NOTARY == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: xcrun notarytool store-credentials watchlaterhub --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD"
+      - name: Build .pkg
+        env:
+          SIGN_ID: ${{ secrets.MAC_INSTALLER_SIGN_ID }}
+          NOTARY_PROFILE: ${{ env.HAS_NOTARY == 'true' && 'watchlaterhub' || '' }}
+        run: ./build-pkg.sh
+      - name: Read version
+        id: ver
+        run: echo "v=$(sed -n 's/^version = "\(.*\)"/\1/p' launcher/Cargo.toml | head -1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WatchLaterHub-Launcher
+          path: dist/WatchLaterHub-Launcher.pkg
+      # 每個版本一個 Release（版本號在 launcher/Cargo.toml）；同版本再發佈會覆蓋安裝檔
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.v }}
+          name: 電腦小幫手 v${{ steps.ver.outputs.v }}
+          body: |
+            WatchLaterHub「開啟」功能需要的電腦小幫手（Mac，Apple 晶片與 Intel 通用）。
+            下載 WatchLaterHub-Launcher.pkg 雙擊安裝，裝好後回到新分頁按「重新偵測」。
+            移除：sudo "/Library/Application Support/WatchLaterHub/uninstall.sh"
+          files: dist/WatchLaterHub-Launcher.pkg
+          overwrite_files: true
+          make_latest: true
